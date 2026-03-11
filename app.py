@@ -34,7 +34,6 @@ except ImportError:
 
 ECOMMERCE_SIGNALS = ["add to cart", "ajouter au panier", "buy now", "panier", "checkout", "shop now", "commander", "e-shop", "/cart"]
 
-# --- FILTRE ANTI-BRUIT PUISSANT ---
 ANTI_NOISE_WORDS = [
     "accueil", "contact", "mentions", "recherche", "login", 
     "connexion", "menu", "exposants", "home", "en savoir plus", 
@@ -166,7 +165,7 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
     exclus_df = pd.DataFrame(exclus) if exclus else pd.DataFrame()
     return brands_df, exclus_df
 
-# --- MOTEUR DE SCRAPING DE PRÉCISION ---
+# --- MOTEUR DE SCRAPING ULTRA ROBUSTE ---
 async def scrape_with_playwright(url, mode, max_pages, max_companies):
     companies = []
     async with async_playwright() as p:
@@ -186,7 +185,6 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                 content = await page.content()
                 soup = BeautifulSoup(content, "html.parser")
                 
-                # On cherche des blocs
                 blocks = soup.find_all(["div", "article", "li"], class_=re.compile(r"exhibitor|exposant|company|booth|stand|brand|participant", re.I))
                 
                 added_this_round = 0
@@ -194,18 +192,15 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                 
                 for block in blocks:
                     text = block.get_text(" ", strip=True)
-                    # REGLE 1 : Le bloc doit contenir du vrai texte (pas juste "1")
                     if len(text) < 40: continue
                     
                     name_tag = block.find(["h2", "h3", "h4", "strong"])
                     if not name_tag:
-                        # Fallback sur un lien très court si pas de titre
                         a_tags = block.find_all("a")
                         if a_tags: name_tag = a_tags[0]
                     
                     name = name_tag.get_text(strip=True) if name_tag else ""
                     
-                    # REGLE 2 : Filtre anti-bruit ultra strict
                     if not name or len(name) < 2 or len(name) > 60: continue
                     if name.lower() in existing_names: continue
                     if any(bad_word in name.lower() for bad_word in ANTI_NOISE_WORDS): continue
@@ -215,16 +210,10 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                         if a["href"].startswith("http") and "facebook" not in a["href"] and "linkedin" not in a["href"]:
                             website = a["href"]; break
                     
-                    # REGLE 3 : Trouver la vraie description
-                    desc_tags = block.find_all(["p", "span", "div"])
-                    valid_texts = [t.get_text(strip=True) for t in desc_tags if len(t.get_text(strip=True)) > 20 and t.get_text(strip=True) != name]
-                    
-                    if valid_texts:
-                        desc = max(valid_texts, key=len)[:300] # Prend le texte le plus long du bloc
-                    else:
-                        desc = text.replace(name, "")[:300]
+                    # MÉTHODE BLINDÉE POUR LA DESCRIPTION
+                    desc = text.replace(name, "").strip()[:300]
                         
-                    if len(desc) < 20: continue # On refuse les descriptions vides ou de 2 mots
+                    if len(desc) < 20: continue 
 
                     companies.append({"Nom": name, "Site Web": website, "Description": desc, "_raw_text": text.lower(), "Stand": "", "E-commerce": "Non vérifié"})
                     existing_names.add(name.lower())
