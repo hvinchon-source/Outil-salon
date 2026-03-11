@@ -24,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping & Moteur de Scoring "Rayons X"</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping de Précision & Moteur ICP</p></div>', unsafe_allow_html=True)
 
 try:
     from playwright.async_api import async_playwright
@@ -34,20 +34,25 @@ except ImportError:
 
 ECOMMERCE_SIGNALS = ["add to cart", "ajouter au panier", "buy now", "panier", "checkout", "shop now", "commander", "e-shop", "/cart"]
 
-# ─── NOUVELLE LOGIQUE DE LECTURE (MOTS EXACTS UNIQUEMENT) ──────────────────────
+# Liste noire pour éviter de scraper les menus du site
+ANTI_NOISE_WORDS = [
+    "accueil", "contact", "mentions légales", "recherche", "login", 
+    "connexion", "menu", "exposants", "home", "en savoir plus", 
+    "lire la suite", "voir la fiche", "page suivante", "filtrer", 
+    "catégories", "mot de passe", "s'inscrire", "newsletter"
+]
+
+# ─── LOGIQUE DE LECTURE (MOTS EXACTS UNIQUEMENT) ──────────────────────
 def contains_exact_keyword(text: str, keywords_list: list) -> bool:
-    """Cherche un mot exact pour éviter que 'auto' ne valide 'autorisation'."""
     text_lower = text.lower()
     for kw in keywords_list:
         clean_kw = kw.strip().lower()
         if not clean_kw: continue
-        # Le \b en Regex signifie "frontière de mot" (espace, ponctuation...)
         if re.search(r'\b' + re.escape(clean_kw) + r'\b', text_lower):
             return True
     return False
 
 def get_matched_keyword(text: str, keywords_list: list) -> str:
-    """Retourne le mot qui a matché pour savoir de quel secteur on parle."""
     text_lower = text.lower()
     for kw in keywords_list:
         clean_kw = kw.strip().lower()
@@ -76,7 +81,7 @@ def fetch_web_insights(brand_name: str) -> tuple:
     except: pass
     return distrib_info, prix_info
 
-# ─── NOUVEAU SCORING AVEC EXPLICATIONS ─────────────────────────────────────────
+# ─── SCORING AVEC EXPLICATIONS ─────────────────────────────────────────
 def calculate_score_with_details(text: str, website: str, ecom_status: str, distrib_web_info: str, weights: dict, positive_distrib: list) -> tuple:
     points = 0
     max_possible = sum(weights.values())
@@ -84,42 +89,36 @@ def calculate_score_with_details(text: str, website: str, ecom_status: str, dist
     
     if max_possible == 0: return 0, "Aucun poids défini"
 
-    # 1. Présence Web
     if website: 
         points += weights['web']
         details.append(f"✅ Site Web (+{weights['web']})")
     
-    # 2. Pas d'e-commerce
     if ecom_status == "❌ Absent": 
         points += weights['no_ecom']
         details.append(f"✅ Pas d'e-com trouvé (+{weights['no_ecom']})")
     elif ecom_status == "Non vérifié":
-        # On donne la moitié des points pour ne pas pénaliser un site qui bloque les robots
         points += (weights['no_ecom'] / 2)
         details.append(f"⚠️ E-com incertain (+{weights['no_ecom']/2})")
     else:
         details.append(f"❌ E-com détecté (0)")
     
-    # 3. Réseau de distribution (Fiche OU Web)
     distrib_found = False
     if contains_exact_keyword(text, positive_distrib):
         distrib_found = True
-        details.append("✅ Mots-clés distribution dans la fiche")
+        details.append("✅ Mots distribution (Fiche)")
     if distrib_web_info != "Introuvable" and distrib_web_info != "Non cherché":
         distrib_found = True
-        details.append("✅ Distributeurs trouvés sur le web")
+        details.append("✅ Distributeurs (Web)")
         
     if distrib_found:
         points += weights['distrib']
         details.append(f"➡️ Bonus Distrib (+{weights['distrib']})")
-        # Super Bonus ICP : Pas d'e-com + Distribution
         if ecom_status == "❌ Absent":
             points += 5
             max_possible += 5
-            details.append("🌟 COMBO: 100% B2B2C (+5)")
+            details.append("🌟 COMBO B2B2C (+5)")
             
-    # 4. Qualité
-    if len(text) > 200: 
+    if len(text) > 150: 
         points += weights['qualite']
         details.append(f"✅ Fiche détaillée (+{weights['qualite']})")
     
@@ -135,10 +134,8 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
         website = c.get("Site Web", "")
         ecom_status = c.get("E-commerce", "Non vérifié")
         
-        # Secteur (Mots exacts)
         sector = get_matched_keyword(raw_text, config['sectors'])
                 
-        # Enrichissement Web
         distrib_info, prix_info = "Non cherché", "Non cherché"
         if do_web_search:
             distrib_info, prix_info = fetch_web_insights(c.get("Nom", ""))
@@ -147,22 +144,21 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
         
         row = {
             "🔥 Score": score,
-            "🔍 Détail du calcul": explications,
+            "🔍 Détail": explications,
             "✅ Nom": c.get("Nom", ""),
             "🏭 Secteur": sector,
             "🌐 Site Web": website,
             "🛒 E-commerce": ecom_status,
-            "🔍 Distributeurs (Recherche Web)": distrib_info,
-            "🏷️ Infos Prix (Recherche Web)": prix_info,
+            "🔍 Distributeurs (Web)": distrib_info,
+            "🏷️ Prix (Web)": prix_info,
             "📝 Description": c.get("Description", "")[:200]
         }
         
-        # Filtre d'exclusion (Mots exacts)
         is_exclu = contains_exact_keyword(raw_text, config['exclusions'])
         is_grossiste = contains_exact_keyword(raw_text, grossistes_kw)
         
         if is_exclu or is_grossiste:
-            row["Raison exclusion"] = "Mot clé d'exclusion détecté" if is_exclu else "Grossiste/Importateur"
+            row["Raison exclusion"] = "Mot d'exclusion" if is_exclu else "Grossiste/Importateur"
             exclus.append(row)
         else:
             brands.append(row)
@@ -171,7 +167,7 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
     exclus_df = pd.DataFrame(exclus) if exclus else pd.DataFrame()
     return brands_df, exclus_df
 
-# ─── MOTEUR DE SCRAPING ─────────────────────────────────────────────────────────
+# ─── MOTEUR DE SCRAPING DE PRÉCISION ───────────────────────────────────────────
 async def scrape_with_playwright(url, mode, max_pages, max_companies):
     companies = []
     async with async_playwright() as p:
@@ -190,28 +186,40 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
             while len(companies) < max_companies:
                 content = await page.content()
                 soup = BeautifulSoup(content, "html.parser")
-                blocks = soup.find_all(["div", "article", "li", "tr"], class_=re.compile(r"exhibitor|exposant|company|card|item", re.I))
+                
+                # SECTEURS DE PRÉCISION : on enlève "item" et "card" qui attirent les menus
+                blocks = soup.find_all(["div", "article", "li"], class_=re.compile(r"exhibitor|exposant|company|booth|stand|brand|participant", re.I))
                 
                 added_this_round = 0
-                existing_names = {c.get("Nom", "") for c in companies}
+                existing_names = {c.get("Nom", "").lower() for c in companies}
                 
                 for block in blocks:
                     text = block.get_text(" ", strip=True)
-                    if len(text) < 10: continue
-                    name_tag = block.find(["h2", "h3", "h4", "strong", "b", "a"])
-                    name = name_tag.get_text(strip=True)[:100] if name_tag else ""
+                    if len(text) < 15: continue
                     
-                    if name and name not in existing_names and len(companies) < max_companies:
-                        website = ""
-                        for a in block.find_all("a", href=True):
-                            if a["href"].startswith("http") and "facebook" not in a["href"] and "linkedin" not in a["href"]:
-                                website = a["href"]; break
-                        
-                        desc_tags = block.find_all(["p", "span"])
-                        desc = desc_tags[0].get_text(strip=True)[:300] if desc_tags else text.replace(name, "")[:300]
-                        companies.append({"Nom": name, "Site Web": website, "Description": desc, "_raw_text": text.lower(), "Stand": "", "E-commerce": "Non vérifié"})
-                        existing_names.add(name)
-                        added_this_round += 1
+                    # On cible préférentiellement les titres pour le nom de l'entreprise
+                    name_tag = block.find(["h2", "h3", "h4", "strong"])
+                    name = name_tag.get_text(strip=True) if name_tag else ""
+                    
+                    # Filtre Anti-Bruit
+                    if not name or len(name) < 2 or len(name) > 60: continue
+                    if name.lower() in existing_names: continue
+                    if any(bad_word in name.lower() for bad_word in ANTI_NOISE_WORDS): continue
+                    
+                    website = ""
+                    for a in block.find_all("a", href=True):
+                        if a["href"].startswith("http") and "facebook" not in a["href"] and "linkedin" not in a["href"]:
+                            website = a["href"]; break
+                    
+                    desc_tags = block.find_all(["p", "span"])
+                    desc = desc_tags[0].get_text(strip=True)[:300] if desc_tags else text.replace(name, "")[:300]
+                    
+                    # On s'assure qu'on a un minimum de description
+                    if len(desc) < 10: continue
+
+                    companies.append({"Nom": name, "Site Web": website, "Description": desc, "_raw_text": text.lower(), "Stand": "", "E-commerce": "Non vérifié"})
+                    existing_names.add(name.lower())
+                    added_this_round += 1
                 
                 if mode == "Infinite Scroll":
                     prev_h = await page.evaluate("document.body.scrollHeight")
@@ -220,7 +228,7 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                     new_h = await page.evaluate("document.body.scrollHeight")
                     if added_this_round == 0 and new_h == prev_h:
                         failed_scrolls += 1
-                        if failed_scrolls >= 5: break
+                        if failed_scrolls >= 4: break
                     else: failed_scrolls = 0
                 elif mode == "Pagination":
                     if pages_scraped >= max_pages: break
@@ -319,6 +327,6 @@ with tab_main:
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 if not brands_df.empty: brands_df.to_excel(writer, sheet_name="Marques Qualifiées", index=False)
                 if not exclus_df.empty: exclus_df.to_excel(writer, sheet_name="Exclus", index=False)
-            st.download_button("📥 TÉLÉCHARGER L'EXCEL ENRICHIT", output.getvalue(), "Leads_ICP_Scorés.xlsx")
+            st.download_button("📥 TÉLÉCHARGER L'EXCEL ENRICHIT", output.getvalue(), "Leads_ICP_Scores.xlsx")
         else:
             st.error("Aucune donnée trouvée.")
