@@ -24,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping de Précision Extrême & Moteur ICP</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping Blindé & Destruction des menus</p></div>', unsafe_allow_html=True)
 
 try:
     from playwright.async_api import async_playwright
@@ -35,45 +35,36 @@ except ImportError:
 ECOMMERCE_SIGNALS = ["add to cart", "ajouter au panier", "buy now", "panier", "checkout", "shop now", "commander", "e-shop", "/cart"]
 
 ANTI_NOISE_WORDS = [
-    "accueil", "contact", "mentions", "recherche", "login", 
-    "connexion", "menu", "exposants", "home", "en savoir plus", 
-    "lire la suite", "voir la fiche", "page", "filtrer", 
-    "catégories", "mot de passe", "s'inscrire", "newsletter",
-    "tous les", "trouver", "résultats", "précédent", "suivant",
-    "sélectionner", "afficher", "rechercher"
+    "accueil", "contact", "mentions", "login", "connexion", "menu", "home", 
+    "lire la suite", "page", "filtrer", "newsletter", "tous les", "trouver", 
+    "résultats", "précédent", "suivant", "sélectionner"
 ]
 
 def contains_exact_keyword(text: str, keywords_list: list) -> bool:
-    text_lower = text.lower()
     for kw in keywords_list:
         clean_kw = kw.strip().lower()
-        if not clean_kw: continue
-        if re.search(r'\b' + re.escape(clean_kw) + r'\b', text_lower):
+        if clean_kw and re.search(r'\b' + re.escape(clean_kw) + r'\b', text.lower()):
             return True
     return False
 
 def get_matched_keyword(text: str, keywords_list: list) -> str:
-    text_lower = text.lower()
     for kw in keywords_list:
         clean_kw = kw.strip().lower()
-        if not clean_kw: continue
-        if re.search(r'\b' + re.escape(clean_kw) + r'\b', text_lower):
+        if clean_kw and re.search(r'\b' + re.escape(clean_kw) + r'\b', text.lower()):
             return clean_kw.capitalize()
     return "Autre"
 
 def fetch_web_insights(brand_name: str) -> tuple:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
+    if not brand_name or len(brand_name) < 2: return "Introuvable", "Introuvable"
     distrib_info, prix_info = "Introuvable", "Introuvable"
-    if not brand_name or len(brand_name) < 2: return distrib_info, prix_info
     try:
-        data_d = {"q": f'"{brand_name}" revendeur OR distributeur', "kl": "fr-fr"}
-        r_d = requests.post("https://lite.duckduckgo.com/lite/", data=data_d, headers=headers, timeout=5)
+        r_d = requests.post("https://lite.duckduckgo.com/lite/", data={"q": f'"{brand_name}" revendeur OR distributeur', "kl": "fr-fr"}, headers=headers, timeout=5)
         soup_d = BeautifulSoup(r_d.text, 'html.parser')
         snippets_d = [tr.text.strip() for tr in soup_d.find_all('td', class_='result-snippet')]
         if snippets_d: distrib_info = " | ".join(snippets_d)[:250]
         
-        data_p = {"q": f'"{brand_name}" prix OR tarif', "kl": "fr-fr"}
-        r_p = requests.post("https://lite.duckduckgo.com/lite/", data=data_p, headers=headers, timeout=5)
+        r_p = requests.post("https://lite.duckduckgo.com/lite/", data={"q": f'"{brand_name}" prix OR tarif', "kl": "fr-fr"}, headers=headers, timeout=5)
         soup_p = BeautifulSoup(r_p.text, 'html.parser')
         snippets_p = [tr.text.strip() for tr in soup_p.find_all('td', class_='result-snippet')]
         if snippets_p: prix_info = " | ".join(snippets_p)[:250]
@@ -116,12 +107,11 @@ def calculate_score_with_details(text: str, website: str, ecom_status: str, dist
             max_possible += 5
             details.append("🌟 COMBO B2B2C (+5)")
             
-    if len(text) > 150: 
+    if len(text) > 100: 
         points += weights['qualite']
         details.append(f"✅ Fiche détaillée (+{weights['qualite']})")
     
-    score_100 = int((points / max_possible) * 100)
-    return min(100, score_100), " | ".join(details)
+    return min(100, int((points / max_possible) * 100)), " | ".join(details)
 
 def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bool) -> tuple:
     brands, exclus = [], []
@@ -131,7 +121,6 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
         raw_text = c.get("_raw_text", "") + " " + c.get("Description", "").lower()
         website = c.get("Site Web", "")
         ecom_status = c.get("E-commerce", "Non vérifié")
-        
         sector = get_matched_keyword(raw_text, config['sectors'])
                 
         distrib_info, prix_info = "Non cherché", "Non cherché"
@@ -152,11 +141,11 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
             "📝 Description": c.get("Description", "")[:200]
         }
         
-        is_exclu = contains_exact_keyword(raw_text, config['exclusions'])
-        is_grossiste = contains_exact_keyword(raw_text, grossistes_kw)
-        
-        if is_exclu or is_grossiste:
-            row["Raison exclusion"] = "Mot d'exclusion" if is_exclu else "Grossiste/Importateur"
+        if contains_exact_keyword(raw_text, config['exclusions']):
+            row["Raison exclusion"] = "Mot d'exclusion trouvé"
+            exclus.append(row)
+        elif contains_exact_keyword(raw_text, grossistes_kw):
+            row["Raison exclusion"] = "Grossiste/Importateur"
             exclus.append(row)
         else:
             brands.append(row)
@@ -165,7 +154,7 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
     exclus_df = pd.DataFrame(exclus) if exclus else pd.DataFrame()
     return brands_df, exclus_df
 
-# --- MOTEUR DE SCRAPING ULTRA ROBUSTE ---
+# --- MOTEUR DE SCRAPING (AVEC BULLDOZER HTML) ---
 async def scrape_with_playwright(url, mode, max_pages, max_companies):
     companies = []
     async with async_playwright() as p:
@@ -177,7 +166,7 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
             await page.wait_for_timeout(3000)
             
             if mode == "Auto":
-                has_next = await page.query_selector("a[rel='next'], button:has-text('suivant')")
+                has_next = await page.query_selector("a[rel='next'], button:has-text('suivant'), button:has-text('next')")
                 mode = "Pagination" if has_next else "Infinite Scroll"
             
             pages_scraped, failed_scrolls = 0, 0
@@ -185,35 +174,46 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                 content = await page.content()
                 soup = BeautifulSoup(content, "html.parser")
                 
-                blocks = soup.find_all(["div", "article", "li"], class_=re.compile(r"exhibitor|exposant|company|booth|stand|brand|participant", re.I))
+                # 1. DESTRUCTION DES MENUS (Le Bulldozer)
+                # On retire tout le code inutile qui pollue le robot
+                for tag in soup.find_all(["nav", "header", "footer", "aside", "script", "style"]):
+                    tag.decompose()
+                
+                # 2. RECHERCHE ÉLARGIE (Vu qu'on a détruit le menu, on peut être plus large)
+                blocks = soup.find_all(["div", "article", "li", "tr"], class_=re.compile(r"exhibitor|exposant|company|card|item|grid|list", re.I))
+                
+                # Heuristique de secours si le site n'utilise aucune de ces classes
+                if not blocks:
+                    blocks = [h.parent for h in soup.find_all(["h2", "h3"])]
                 
                 added_this_round = 0
                 existing_names = {c.get("Nom", "").lower() for c in companies}
                 
                 for block in blocks:
                     text = block.get_text(" ", strip=True)
-                    if len(text) < 40: continue
+                    if len(text) < 15: continue
                     
-                    name_tag = block.find(["h2", "h3", "h4", "strong"])
-                    if not name_tag:
-                        a_tags = block.find_all("a")
-                        if a_tags: name_tag = a_tags[0]
-                    
+                    # Extraction du nom prioritaire
+                    name_tag = block.find(["h2", "h3", "h4", "strong", "b"])
                     name = name_tag.get_text(strip=True) if name_tag else ""
                     
+                    # Fallback sur les liens si pas de titre
+                    if not name:
+                        a_tags = block.find_all("a")
+                        if a_tags: name = a_tags[0].get_text(strip=True)
+                    
+                    # Nettoyage
                     if not name or len(name) < 2 or len(name) > 60: continue
                     if name.lower() in existing_names: continue
-                    if any(bad_word in name.lower() for bad_word in ANTI_NOISE_WORDS): continue
+                    if any(bad in name.lower() for bad in ANTI_NOISE_WORDS): continue
                     
                     website = ""
                     for a in block.find_all("a", href=True):
-                        if a["href"].startswith("http") and "facebook" not in a["href"] and "linkedin" not in a["href"]:
+                        if a["href"].startswith("http") and not any(sn in a["href"] for sn in ["facebook", "linkedin", "twitter", "instagram"]):
                             website = a["href"]; break
                     
-                    # MÉTHODE BLINDÉE POUR LA DESCRIPTION
+                    # Description propre
                     desc = text.replace(name, "").strip()[:300]
-                        
-                    if len(desc) < 20: continue 
 
                     companies.append({"Nom": name, "Site Web": website, "Description": desc, "_raw_text": text.lower(), "Stand": "", "E-commerce": "Non vérifié"})
                     existing_names.add(name.lower())
@@ -230,7 +230,7 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                     else: failed_scrolls = 0
                 elif mode == "Pagination":
                     if pages_scraped >= max_pages: break
-                    btn = await page.query_selector("a[rel='next'], button:has-text('Suivant')")
+                    btn = await page.query_selector("a[rel='next'], button:has-text('Suivant'), button:has-text('Next')")
                     if not btn: break
                     try: await btn.click(); await page.wait_for_timeout(3000); pages_scraped += 1
                     except: break
