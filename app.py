@@ -1,4 +1,6 @@
-import streamlit as st
+import os
+# Cette ligne installe le navigateur manquant sur le serveur Streamlit
+os.system("playwright install chromium")import streamlit as st
 import pandas as pd
 import asyncio
 import re
