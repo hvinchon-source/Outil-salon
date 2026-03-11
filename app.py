@@ -24,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping de Précision & Moteur ICP</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping de Précision Extrême & Moteur ICP</p></div>', unsafe_allow_html=True)
 
 try:
     from playwright.async_api import async_playwright
@@ -34,15 +34,16 @@ except ImportError:
 
 ECOMMERCE_SIGNALS = ["add to cart", "ajouter au panier", "buy now", "panier", "checkout", "shop now", "commander", "e-shop", "/cart"]
 
-# Liste noire pour éviter de scraper les menus du site
+# --- FILTRE ANTI-BRUIT PUISSANT ---
 ANTI_NOISE_WORDS = [
-    "accueil", "contact", "mentions légales", "recherche", "login", 
+    "accueil", "contact", "mentions", "recherche", "login", 
     "connexion", "menu", "exposants", "home", "en savoir plus", 
-    "lire la suite", "voir la fiche", "page suivante", "filtrer", 
-    "catégories", "mot de passe", "s'inscrire", "newsletter"
+    "lire la suite", "voir la fiche", "page", "filtrer", 
+    "catégories", "mot de passe", "s'inscrire", "newsletter",
+    "tous les", "trouver", "résultats", "précédent", "suivant",
+    "sélectionner", "afficher", "rechercher"
 ]
 
-# ─── LOGIQUE DE LECTURE (MOTS EXACTS UNIQUEMENT) ──────────────────────
 def contains_exact_keyword(text: str, keywords_list: list) -> bool:
     text_lower = text.lower()
     for kw in keywords_list:
@@ -61,7 +62,6 @@ def get_matched_keyword(text: str, keywords_list: list) -> str:
             return clean_kw.capitalize()
     return "Autre"
 
-# ─── MOTEUR DE RECHERCHE WEB FURTIF ──────────────────────────────
 def fetch_web_insights(brand_name: str) -> tuple:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
     distrib_info, prix_info = "Introuvable", "Introuvable"
@@ -81,7 +81,6 @@ def fetch_web_insights(brand_name: str) -> tuple:
     except: pass
     return distrib_info, prix_info
 
-# ─── SCORING AVEC EXPLICATIONS ─────────────────────────────────────────
 def calculate_score_with_details(text: str, website: str, ecom_status: str, distrib_web_info: str, weights: dict, positive_distrib: list) -> tuple:
     points = 0
     max_possible = sum(weights.values())
@@ -95,7 +94,7 @@ def calculate_score_with_details(text: str, website: str, ecom_status: str, dist
     
     if ecom_status == "❌ Absent": 
         points += weights['no_ecom']
-        details.append(f"✅ Pas d'e-com trouvé (+{weights['no_ecom']})")
+        details.append(f"✅ Pas d'e-com (+{weights['no_ecom']})")
     elif ecom_status == "Non vérifié":
         points += (weights['no_ecom'] / 2)
         details.append(f"⚠️ E-com incertain (+{weights['no_ecom']/2})")
@@ -167,7 +166,7 @@ def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bo
     exclus_df = pd.DataFrame(exclus) if exclus else pd.DataFrame()
     return brands_df, exclus_df
 
-# ─── MOTEUR DE SCRAPING DE PRÉCISION ───────────────────────────────────────────
+# --- MOTEUR DE SCRAPING DE PRÉCISION ---
 async def scrape_with_playwright(url, mode, max_pages, max_companies):
     companies = []
     async with async_playwright() as p:
@@ -187,7 +186,7 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                 content = await page.content()
                 soup = BeautifulSoup(content, "html.parser")
                 
-                # SECTEURS DE PRÉCISION : on enlève "item" et "card" qui attirent les menus
+                # On cherche des blocs
                 blocks = soup.find_all(["div", "article", "li"], class_=re.compile(r"exhibitor|exposant|company|booth|stand|brand|participant", re.I))
                 
                 added_this_round = 0
@@ -195,13 +194,18 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                 
                 for block in blocks:
                     text = block.get_text(" ", strip=True)
-                    if len(text) < 15: continue
+                    # REGLE 1 : Le bloc doit contenir du vrai texte (pas juste "1")
+                    if len(text) < 40: continue
                     
-                    # On cible préférentiellement les titres pour le nom de l'entreprise
                     name_tag = block.find(["h2", "h3", "h4", "strong"])
+                    if not name_tag:
+                        # Fallback sur un lien très court si pas de titre
+                        a_tags = block.find_all("a")
+                        if a_tags: name_tag = a_tags[0]
+                    
                     name = name_tag.get_text(strip=True) if name_tag else ""
                     
-                    # Filtre Anti-Bruit
+                    # REGLE 2 : Filtre anti-bruit ultra strict
                     if not name or len(name) < 2 or len(name) > 60: continue
                     if name.lower() in existing_names: continue
                     if any(bad_word in name.lower() for bad_word in ANTI_NOISE_WORDS): continue
@@ -211,11 +215,16 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
                         if a["href"].startswith("http") and "facebook" not in a["href"] and "linkedin" not in a["href"]:
                             website = a["href"]; break
                     
-                    desc_tags = block.find_all(["p", "span"])
-                    desc = desc_tags[0].get_text(strip=True)[:300] if desc_tags else text.replace(name, "")[:300]
+                    # REGLE 3 : Trouver la vraie description
+                    desc_tags = block.find_all(["p", "span", "div"])
+                    valid_texts = [t.get_text(strip=True) for t in desc_tags if len(t.get_text(strip=True)) > 20 and t.get_text(strip=True) != name]
                     
-                    # On s'assure qu'on a un minimum de description
-                    if len(desc) < 10: continue
+                    if valid_texts:
+                        desc = max(valid_texts, key=len)[:300] # Prend le texte le plus long du bloc
+                    else:
+                        desc = text.replace(name, "")[:300]
+                        
+                    if len(desc) < 20: continue # On refuse les descriptions vides ou de 2 mots
 
                     companies.append({"Nom": name, "Site Web": website, "Description": desc, "_raw_text": text.lower(), "Stand": "", "E-commerce": "Non vérifié"})
                     existing_names.add(name.lower())
@@ -303,7 +312,7 @@ with tab_main:
         }
         
         status = st.empty()
-        status.info("⏳ Étape 1/3 : Scraping des fiches du salon...")
+        status.info("⏳ Étape 1/3 : Scraping de Précision des fiches...")
         raw_data = run_sync(scrape_with_playwright, url, mode, 20, int(max_comp))
         
         if raw_data:
@@ -329,4 +338,4 @@ with tab_main:
                 if not exclus_df.empty: exclus_df.to_excel(writer, sheet_name="Exclus", index=False)
             st.download_button("📥 TÉLÉCHARGER L'EXCEL ENRICHIT", output.getvalue(), "Leads_ICP_Scores.xlsx")
         else:
-            st.error("Aucune donnée trouvée.")
+            st.error("Aucune donnée trouvée. L'algorithme a filtré tout le bruit mais n'a pas trouvé les fiches.")
