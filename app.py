@@ -10,149 +10,159 @@ from datetime import datetime
 import io
 import requests
 
-# ─── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="ExpoLeads Pro MAX", page_icon="🎯", layout="wide")
 
-# ─── CUSTOM CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Syne:wght@700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
 * { font-family: 'Space Grotesk', sans-serif; }
-h1, h2, h3 { font-family: 'Syne', sans-serif; }
 .stApp { background: #0f111a; color: #e8e8f0; }
 .main-header { background: #161824; border: 1px solid #2d3042; border-radius: 12px; padding: 2rem; margin-bottom: 2rem; }
 .main-header h1 { color: #4ade80; font-size: 2.2rem; margin: 0; }
-.score-card { background: #1e2130; border: 1px solid #2d3042; border-radius: 8px; padding: 1.5rem; }
-.stSlider > div > div > div > div { background-color: #4ade80 !important; }
 .stButton > button { background: #4ade80 !important; color: #0f111a !important; border-radius: 6px !important; font-weight: 700 !important; width: 100%; }
-.metric-number { font-size: 2rem; font-weight: 700; color: #4ade80; }
 .stDataFrame { background: #161824 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping, Scoring ICP & Enrichissement Web</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🎯 ExpoLeads Pro MAX</h1><p>Scraping & Moteur de Scoring "Rayons X"</p></div>', unsafe_allow_html=True)
 
-# ─── IMPORTS UTILES ─────────────────────────────────────────────────────────────
 try:
     from playwright.async_api import async_playwright
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-try:
     from bs4 import BeautifulSoup
-    BS4_AVAILABLE = True
 except ImportError:
-    BS4_AVAILABLE = False
+    pass
 
 ECOMMERCE_SIGNALS = ["add to cart", "ajouter au panier", "buy now", "panier", "checkout", "shop now", "commander", "e-shop", "/cart"]
 
-# ─── MOTEUR DE RECHERCHE WEB FURTIF (DUCKDUCKGO) ──────────────────────────────
+# ─── NOUVELLE LOGIQUE DE LECTURE (MOTS EXACTS UNIQUEMENT) ──────────────────────
+def contains_exact_keyword(text: str, keywords_list: list) -> bool:
+    """Cherche un mot exact pour éviter que 'auto' ne valide 'autorisation'."""
+    text_lower = text.lower()
+    for kw in keywords_list:
+        clean_kw = kw.strip().lower()
+        if not clean_kw: continue
+        # Le \b en Regex signifie "frontière de mot" (espace, ponctuation...)
+        if re.search(r'\b' + re.escape(clean_kw) + r'\b', text_lower):
+            return True
+    return False
+
+def get_matched_keyword(text: str, keywords_list: list) -> str:
+    """Retourne le mot qui a matché pour savoir de quel secteur on parle."""
+    text_lower = text.lower()
+    for kw in keywords_list:
+        clean_kw = kw.strip().lower()
+        if not clean_kw: continue
+        if re.search(r'\b' + re.escape(clean_kw) + r'\b', text_lower):
+            return clean_kw.capitalize()
+    return "Autre"
+
+# ─── MOTEUR DE RECHERCHE WEB FURTIF ──────────────────────────────
 def fetch_web_insights(brand_name: str) -> tuple:
-    """Cherche sur le web les distributeurs et les mentions de prix."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    distrib_info = "Introuvable"
-    prix_info = "Introuvable"
-    
-    if not brand_name or len(brand_name) < 2:
-        return distrib_info, prix_info
-        
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
+    distrib_info, prix_info = "Introuvable", "Introuvable"
+    if not brand_name or len(brand_name) < 2: return distrib_info, prix_info
     try:
-        # Recherche Distributeurs
-        data_d = {"q": f'"{brand_name}" revendeur OR distributeur OR "en vente chez"', "kl": "fr-fr"}
+        data_d = {"q": f'"{brand_name}" revendeur OR distributeur', "kl": "fr-fr"}
         r_d = requests.post("https://lite.duckduckgo.com/lite/", data=data_d, headers=headers, timeout=5)
         soup_d = BeautifulSoup(r_d.text, 'html.parser')
         snippets_d = [tr.text.strip() for tr in soup_d.find_all('td', class_='result-snippet')]
-        if snippets_d:
-            distrib_info = " | ".join(snippets_d)[:250] + "..."
-            
-        # Recherche Prix
-        data_p = {"q": f'"{brand_name}" prix OR tarif OR "€"', "kl": "fr-fr"}
+        if snippets_d: distrib_info = " | ".join(snippets_d)[:250]
+        
+        data_p = {"q": f'"{brand_name}" prix OR tarif', "kl": "fr-fr"}
         r_p = requests.post("https://lite.duckduckgo.com/lite/", data=data_p, headers=headers, timeout=5)
         soup_p = BeautifulSoup(r_p.text, 'html.parser')
         snippets_p = [tr.text.strip() for tr in soup_p.find_all('td', class_='result-snippet')]
-        if snippets_p:
-            prix_info = " | ".join(snippets_p)[:250] + "..."
-    except Exception:
-        pass # Ignore silencieusement les erreurs de connexion
-        
+        if snippets_p: prix_info = " | ".join(snippets_p)[:250]
+    except: pass
     return distrib_info, prix_info
 
-# ─── LOGIQUE DE SCORING AVANCÉE ─────────────────────────────────────────────────
-def calculate_score(text: str, website: str, ecom_status: str, distrib_web_info: str, weights: dict, positive_distrib: list) -> int:
-    text_lower = text.lower()
-    distrib_web_lower = distrib_web_info.lower()
+# ─── NOUVEAU SCORING AVEC EXPLICATIONS ─────────────────────────────────────────
+def calculate_score_with_details(text: str, website: str, ecom_status: str, distrib_web_info: str, weights: dict, positive_distrib: list) -> tuple:
     points = 0
     max_possible = sum(weights.values())
+    details = []
     
-    if max_possible == 0: return 0
+    if max_possible == 0: return 0, "Aucun poids défini"
 
     # 1. Présence Web
-    if website: points += weights['web']
+    if website: 
+        points += weights['web']
+        details.append(f"✅ Site Web (+{weights['web']})")
     
-    # 2. Pas d'e-commerce (Le critère d'or !)
-    if ecom_status == "❌ Absent": points += weights['no_ecom']
+    # 2. Pas d'e-commerce
+    if ecom_status == "❌ Absent": 
+        points += weights['no_ecom']
+        details.append(f"✅ Pas d'e-com trouvé (+{weights['no_ecom']})")
+    elif ecom_status == "Non vérifié":
+        # On donne la moitié des points pour ne pas pénaliser un site qui bloque les robots
+        points += (weights['no_ecom'] / 2)
+        details.append(f"⚠️ E-com incertain (+{weights['no_ecom']/2})")
+    else:
+        details.append(f"❌ E-com détecté (0)")
     
-    # 3. Réseau de distribution (Le combo parfait : Pas d'ecom + Distributeurs trouvés)
-    # On regarde si des distributeurs sont mentionnés sur leur fiche OU trouvés sur Google
+    # 3. Réseau de distribution (Fiche OU Web)
     distrib_found = False
-    if any(k.strip().lower() in text_lower for k in positive_distrib if k.strip()):
+    if contains_exact_keyword(text, positive_distrib):
         distrib_found = True
+        details.append("✅ Mots-clés distribution dans la fiche")
     if distrib_web_info != "Introuvable" and distrib_web_info != "Non cherché":
         distrib_found = True
+        details.append("✅ Distributeurs trouvés sur le web")
         
     if distrib_found:
         points += weights['distrib']
-        # Bonus magique de l'ICP : Si Pas d'ecom + Vendu ailleurs = Jackpot
+        details.append(f"➡️ Bonus Distrib (+{weights['distrib']})")
+        # Super Bonus ICP : Pas d'e-com + Distribution
         if ecom_status == "❌ Absent":
             points += 5
             max_possible += 5
+            details.append("🌟 COMBO: 100% B2B2C (+5)")
             
-    # 4. Qualité du site/description
-    if len(text) > 200: points += weights['qualite']
+    # 4. Qualité
+    if len(text) > 200: 
+        points += weights['qualite']
+        details.append(f"✅ Fiche détaillée (+{weights['qualite']})")
     
     score_100 = int((points / max_possible) * 100)
-    return min(100, score_100) # Plafonne à 100
-
-def qualifies_for_exclusion(text: str, exclusions: list) -> bool:
-    return any(k.strip().lower() in text.lower() for k in exclusions if k.strip())
+    return min(100, score_100), " | ".join(details)
 
 def qualify_companies(raw_companies: list[dict], config: dict, do_web_search: bool) -> tuple:
     brands, exclus = [], []
-    grossistes_kw = ["grossiste", "importateur", "trading", "négociant", "centrale d'achat"]
+    grossistes_kw = ["grossiste", "importateur", "négociant", "centrale d'achat"]
     
     for c in raw_companies:
         raw_text = c.get("_raw_text", "") + " " + c.get("Description", "").lower()
         website = c.get("Site Web", "")
         ecom_status = c.get("E-commerce", "Non vérifié")
         
-        # Détection secteur
-        sector = "Autre"
-        for kw in config['sectors']:
-            if kw.strip() and kw.strip().lower() in raw_text:
-                sector = kw.strip().capitalize()
-                break
+        # Secteur (Mots exacts)
+        sector = get_matched_keyword(raw_text, config['sectors'])
                 
-        # Enrichissement Web (Seulement si demandé)
+        # Enrichissement Web
         distrib_info, prix_info = "Non cherché", "Non cherché"
         if do_web_search:
             distrib_info, prix_info = fetch_web_insights(c.get("Nom", ""))
             
-        score = calculate_score(raw_text, website, ecom_status, distrib_info, config['weights'], config['positive_distrib'])
+        score, explications = calculate_score_with_details(raw_text, website, ecom_status, distrib_info, config['weights'], config['positive_distrib'])
         
         row = {
             "🔥 Score": score,
+            "🔍 Détail du calcul": explications,
             "✅ Nom": c.get("Nom", ""),
             "🏭 Secteur": sector,
             "🌐 Site Web": website,
             "🛒 E-commerce": ecom_status,
             "🔍 Distributeurs (Recherche Web)": distrib_info,
             "🏷️ Infos Prix (Recherche Web)": prix_info,
-            "📝 Description (Salon)": c.get("Description", "")[:200] + "...",
-            "📍 Stand": c.get("Stand", ""),
-            "💰 CA Min (Cible)": config['ca_min']
+            "📝 Description": c.get("Description", "")[:200]
         }
         
-        if qualifies_for_exclusion(raw_text, config['exclusions']) or qualifies_for_exclusion(raw_text, grossistes_kw):
+        # Filtre d'exclusion (Mots exacts)
+        is_exclu = contains_exact_keyword(raw_text, config['exclusions'])
+        is_grossiste = contains_exact_keyword(raw_text, grossistes_kw)
+        
+        if is_exclu or is_grossiste:
+            row["Raison exclusion"] = "Mot clé d'exclusion détecté" if is_exclu else "Grossiste/Importateur"
             exclus.append(row)
         else:
             brands.append(row)
@@ -173,14 +183,14 @@ async def scrape_with_playwright(url, mode, max_pages, max_companies):
             await page.wait_for_timeout(3000)
             
             if mode == "Auto":
-                has_next = await page.query_selector("a[rel='next'], button:has-text('suivant'), button:has-text('next'), .pagination")
+                has_next = await page.query_selector("a[rel='next'], button:has-text('suivant')")
                 mode = "Pagination" if has_next else "Infinite Scroll"
             
             pages_scraped, failed_scrolls = 0, 0
             while len(companies) < max_companies:
                 content = await page.content()
                 soup = BeautifulSoup(content, "html.parser")
-                blocks = soup.find_all(["div", "article", "li", "tr"], class_=re.compile(r"exhibitor|exposant|company|card|item|grid", re.I))
+                blocks = soup.find_all(["div", "article", "li", "tr"], class_=re.compile(r"exhibitor|exposant|company|card|item", re.I))
                 
                 added_this_round = 0
                 existing_names = {c.get("Nom", "") for c in companies}
@@ -249,19 +259,18 @@ with tab_settings:
     st.markdown("### ⚖️ PONDÉRATIONS DU SCORING")
     col1, col2, col3, col4 = st.columns(4)
     with col1: w_web = st.slider("PRÉSENCE WEB", 0, 5, 3)
-    with col2: w_noecom = st.slider("PAS D'E-COMMERCE", 0, 5, 5, help="Le critère le plus fort pour votre ICP.")
-    with col3: w_distrib = st.slider("RÉSEAU DISTRIBUTION", 0, 5, 5, help="Distributeurs trouvés sur le web ou dans la description.")
+    with col2: w_noecom = st.slider("PAS D'E-COMMERCE", 0, 5, 5)
+    with col3: w_distrib = st.slider("RÉSEAU DISTRIBUTION", 0, 5, 5)
     with col4: w_qual = st.slider("QUALITÉ DU SITE", 0, 5, 2)
     
     st.markdown("### 🎯 PARAMÈTRES ICP")
     c1, c2 = st.columns(2)
     with c1:
-        ca_min = st.text_input("CA MINIMUM (€)", "20 000 000")
-    with c2:
         secteurs_input = st.text_input("SECTEURS ICP CIBLES", "Pharma, Cosmétique, DIY, HAP, Auto, Animaux")
-        exclusions_input = st.text_input("CRITÈRES D'EXCLUSION", "Pure player e-commerce, Marketplace, Startup, Agence")
+    with c2:
+        exclusions_input = st.text_input("CRITÈRES D'EXCLUSION EXACTS", "Pure player, Marketplace, Startup, Agence")
         
-    instructions = st.text_area("Mots-clés qui prouvent un bon réseau de distribution (dans la fiche) :", "GMS, pharmacies, GSB, animaleries, réseau de distribution, revendeurs agréés")
+    instructions = st.text_area("Mots-clés de distribution (Dans la description) :", "GMS, pharmacies, GSB, animaleries, réseau de distribution, revendeurs agréés")
 
 with tab_main:
     col_url, col_btn = st.columns([3, 1])
@@ -271,51 +280,34 @@ with tab_main:
         st.write("") 
         start_btn = st.button("🚀 LANCER LE SCAN")
         
-    st.markdown("---")
-    
-    with st.expander("⚙️ Options techniques d'enrichissement"):
+    with st.expander("⚙️ Options techniques"):
         mode = st.selectbox("Mode", ["Auto", "Infinite Scroll", "Pagination"])
         max_comp = st.number_input("Exposants max", 10, 2500, 500)
         check_ecom = st.checkbox("🛒 Activer la vérification E-commerce (Indispensable pour l'ICP)", value=True)
-        check_web = st.checkbox("🔍 Rechercher les distributeurs et prix sur Google/Web (Ajoute du temps de scan)", value=True)
+        check_web = st.checkbox("🔍 Rechercher distributeurs sur le Web", value=True)
 
     if start_btn and url:
         config = {
             'weights': {'web': w_web, 'no_ecom': w_noecom, 'distrib': w_distrib, 'qualite': w_qual},
-            'ca_min': ca_min,
             'sectors': [x.strip() for x in secteurs_input.split(',')],
             'exclusions': [x.strip() for x in exclusions_input.split(',')],
             'positive_distrib': [x.strip() for x in instructions.split(',')]
         }
         
         status = st.empty()
-        status.info("⏳ Étape 1/3 : Scraping des fiches du salon en cours...")
+        status.info("⏳ Étape 1/3 : Scraping des fiches du salon...")
         raw_data = run_sync(scrape_with_playwright, url, mode, 20, int(max_comp))
         
         if raw_data:
             if check_ecom:
-                status.info("🛒 Étape 2/3 : Analyse des sites web pour vérifier l'absence d'e-commerce...")
+                status.info("🛒 Étape 2/3 : Analyse des paniers e-commerce...")
                 for r in raw_data:
                     if r["Site Web"]: r["E-commerce"] = run_sync(check_ecommerce, r["Site Web"])
             
-            if check_web:
-                status.info("🔍 Étape 3/3 : Recherche Web des distributeurs et des prix... (Cela peut prendre quelques minutes)")
-                # La recherche se fait dans la fonction qualify_companies
-            else:
-                status.info("⚙️ Étape 3/3 : Calcul des scores ICP en cours...")
-                
+            status.info("🔍 Étape 3/3 : Qualification et Recherche Web...")
             brands_df, exclus_df = qualify_companies(raw_data, config, check_web)
             
             status.empty()
-            st.success("🎉 Analyse terminée ! Les marques sans E-commerce et avec des distributeurs ont obtenu les meilleurs scores.")
-            
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"<div class='score-card'><div>MARQUES ICP</div><div class='metric-number'>{len(brands_df)}</div></div>", unsafe_allow_html=True)
-            c2.markdown(f"<div class='score-card'><div>EXCLUS / DISTRIBUTEURS</div><div class='metric-number' style='color:#ef4444;'>{len(exclus_df)}</div></div>", unsafe_allow_html=True)
-            top_tier = len(brands_df[brands_df["🔥 Score"] >= 85]) if not brands_df.empty else 0
-            c3.markdown(f"<div class='score-card'><div>SCORE > 85% (Coeur de cible)</div><div class='metric-number' style='color:#eab308;'>{top_tier}</div></div>", unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
             
             t1, t2 = st.tabs(["💎 Prospects Qualifiés", "🗑️ Exclus"])
             with t1:
@@ -323,11 +315,10 @@ with tab_main:
             with t2:
                 st.dataframe(exclus_df, use_container_width=True)
             
-            # Export
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 if not brands_df.empty: brands_df.to_excel(writer, sheet_name="Marques Qualifiées", index=False)
                 if not exclus_df.empty: exclus_df.to_excel(writer, sheet_name="Exclus", index=False)
-            st.download_button("📥 TÉLÉCHARGER L'EXCEL ENRICHIT", output.getvalue(), "Leads_ICP_Enrichis.xlsx")
+            st.download_button("📥 TÉLÉCHARGER L'EXCEL ENRICHIT", output.getvalue(), "Leads_ICP_Scorés.xlsx")
         else:
-            st.error("Aucune donnée trouvée. Le site bloque peut-être le robot.")
+            st.error("Aucune donnée trouvée.")
